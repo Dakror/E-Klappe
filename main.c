@@ -143,12 +143,26 @@ int main(void) {
 
 	display('8', DSPC);
 
+	PORTA = 1 << PINA2;
+
+	uint8_t index = 0;
+
 	while (1) {
 		/*displayNumber(take, take_displays, 2);
 		displayNumber(scene, scene_displays, 1);
 
 		debounce(&btn0, btn0_press);
 		debounce(&btn1, btn1_press);*/
+
+		PORTC = 1 << index;
+		index++;
+
+		if(index > 7) {
+			index = 0;
+			PORTA ^= 1 << PINA2;
+		}
+
+		_delay_ms(100);
 	}
 
 	return 0;
