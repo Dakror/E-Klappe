@@ -3,39 +3,34 @@
  */
 
 #include <avr/io.h>
-#include <util/delay.h>
 #include <math.h>
+#include <stdlib.h>
 
 #define confidence_threshhold 10
 
-// -- displays -- //
-#define DSPA PINA0
-#define DSPB PINA1
-#define DSPC PINA2
-#define DSPD PINA3
+#define true 1
+#define false 0
 
-const uint8_t take_displays[] = { DSPC, DSPD };
-const uint8_t scene_displays[] = { DSPA };
+typedef uint8_t bool;
 
-struct btn {
+struct display {
+	volatile uint8_t * sfr;
+	uint8_t pin;
+	bool mux;
+} DSPA, DSPB, DSPC, DSPD;
+
+struct button {
 	volatile uint8_t * sfr;
 	uint8_t pin;
 
-	/**
-	 0 = not pressed
-	 1 = was pressed
-	 **/
-	uint8_t pressed;
+	bool pressed;
 	uint8_t pressed_confidence;
 	uint8_t released_confidence;
 };
 
-// -- chars -- //
-
 char nums[] = {
 // - - - - - - HDCGBEFA
         ' ', 0b00000000, //
-        '.', 0b10000000, //
         'E', 0b01010111, //
         '0', 0b01101111, //
         '1', 0b00101000, //
@@ -49,121 +44,131 @@ char nums[] = {
         '9', 0b01111011, //
         };
 
-int lookup(char num) {
-	for (uint8_t i = 0; i < sizeof(nums); i += 2)
-		if (num == nums[i]) return i + 1;
+uint8_t scene = 1;
+uint8_t take = 1;
 
-	return lookup('E'); // 'E' for error by default
-}
+uint8_t * take_mem;
 
-// -- display -- //
+uint8_t tick = 0;
 
-void displayIndex(uint8_t index, uint8_t port) {
-	PORTC = nums[index];
-	PORTA = 0b11111111; // all other pins of a are off
-}
-
-void display(char num, uint8_t port) {
-	displayIndex(lookup(num), port);
-}
-
-void err(void) {
-	display('E', DSPA);
-	display('E', DSPB);
-	display('E', DSPC);
-	display('E', DSPD);
-}
-
-void displayNumber(uint8_t num, const uint8_t ports[], uint8_t portsc) {
-	uint8_t digits = floor(log10(num)) + 1;
-
-	if (digits > portsc) {
-		err();
-		return;
-	}
-
-	if (num == 0) digits = 1;
-
-	for (uint8_t i = 0; i < portsc; i++) {
-		display((char) (((uint8_t) '0') + (num % 10)), ports[(portsc - 1) - i]);
-		num /= 10;
-	}
-}
-
-// -- button -- //
-
-void debounce(struct btn * b, void (*f)(void)) {
+void debounce(struct button * b, void (*f)(void)) {
 	if (bit_is_clear(*(b->sfr), b->pin)) {
 		b->pressed_confidence++;
 
 		if (b->pressed_confidence > confidence_threshhold) {
-			if (b->pressed == 0) {
+			if (!b->pressed) {
 				(*f)();
-				b->pressed = 1;
+				b->pressed = true;
 			}
 
 			b->pressed_confidence = 0;
 		}
 	} else {
 		b->released_confidence++;
+
 		if (b->released_confidence > confidence_threshhold) {
-			b->pressed = 0;
+			b->pressed = false;
 			b->released_confidence = 0;
 		}
 	}
 }
 
-// -- main part -- //
+uint8_t lookup(char num) {
+	for (uint8_t i = 0; i < sizeof(nums); i += 2)
+		if (num == nums[i]) return i + 1;
 
-uint8_t scene = 1;
-uint8_t take = 1;
+	return lookup('E'); // 'E' for error by default
+}
 
-void btn0_press(void) {
+char int2char(uint8_t num) {
+	return (char) (((uint8_t) '0') + num);
+}
+
+void displayChar(char num, struct display * display) {
+	*(display->sfr) = nums[lookup(num)];
+	if (display->mux) {
+		if (num == ' ') PORTB &= ~(1 << display->pin);
+		else PORTB |= 1 << display->pin;
+	}
+}
+
+void displayNumber(uint8_t number, bool take) {
+	if (take) {
+		displayChar(int2char(number % 10), &DSPD);
+		displayChar(int2char(number / 10), &DSPC);
+	} else {
+		if (tick % 2 == 0) {
+			displayChar(' ', &DSPA);
+			displayChar(int2char(number % 10), &DSPB);
+		} else {
+			displayChar(' ', &DSPB);
+			displayChar(int2char(number / 10), &DSPA);
+		}
+	}
+}
+
+void button0_press(void) {
+	take = 1;
+	take_mem[scene] = take;
+	scene++;
+	if (scene > 99) scene = 1;
+}
+
+void button1_press(void) {
 	take++;
 	if (take > 99) take = 1;
 }
 
-void btn1_press(void) {
-	take = 1;
-	scene++;
-	if (scene > 9) scene = 1;
-}
-
 int main(void) {
-	DDRB &= ~(1 << PINB0); // input (inverted)
-	DDRB &= ~(1 << PINB1); // input (inverted)
-	PORTB = 1 << PINB0 | 1 << PINB1;
+	DSPA.sfr = &PORTD;
+	DSPA.pin = PINB1;
+	DSPA.mux = true;
+	DSPB.sfr = &PORTD;
+	DSPB.pin = PINB0;
+	DSPB.mux = true;
+	DSPC.sfr = &PORTA;
+	DSPD.sfr = &PORTC;
 
-	DDRA = 0b11111111; // full a part on output
-	DDRC = 0b11111111; // full c part on output
+	uint8_t s = sizeof(uint8_t);
 
-	/*struct btn btn0 = { .sfr = &PINB, .pin = 0, .pressed = 0, .pressed_confidence = 0, .released_confidence = 0 };
-	struct btn btn1 = { .sfr = &PINB, .pin = 1, .pressed = 0, .pressed_confidence = 0, .released_confidence = 0 };
-	 */
+	take_mem = malloc(100 * s);
+	for (uint8_t i = 0; i < 100; i++)
+		take_mem[i * s] = 0;
 
-	display('8', DSPC);
+	// output mode
+	DDRA = 0xff;
 
-	PORTA = 1 << PINA2;
+	DDRB = 0b00000011; // controller bits for mux displays
+	DDRB &= ~(1 << PINB2);
+	DDRB &= ~(1 << PINB3);
+	DDRB &= ~(1 << PINB4);
 
-	uint8_t index = 0;
+	PORTB |= 1 << PINB2;
+	PORTB |= 1 << PINB3;
+	PORTB |= 1 << PINB4;
 
-	while (1) {
-		/*displayNumber(take, take_displays, 2);
-		displayNumber(scene, scene_displays, 1);
+	DDRC = 0xff;
+	DDRD = 0xff;
 
-		debounce(&btn0, btn0_press);
-		debounce(&btn1, btn1_press);*/
 
-		PORTC = 1 << index;
-		index++;
+	struct button scene_button = { .sfr = &PINB, .pin = 2 };
+	struct button take_button = { .sfr = &PINB, .pin = 3 };
+	struct button lever_button = { .sfr = &PINB, .pin = 4 };
 
-		if(index > 7) {
-			index = 0;
-			PORTA ^= 1 << PINA2;
-		}
+	while (true) {
+		debounce(&scene_button, button0_press);
 
-		_delay_ms(100);
+		debounce(&take_button, button1_press);
+		debounce(&lever_button, button1_press);
+
+		displayNumber(take, true);
+		displayNumber(scene, false);
+
+		tick = ++tick % 256;
 	}
+
+	free(take_mem);
 
 	return 0;
 }
+
