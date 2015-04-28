@@ -44,12 +44,14 @@ char nums[] = {
         '9', 0b01111011, //
         };
 
-uint8_t scene = 1;
-uint8_t take = 1;
+uint8_t scene = 0;
+uint8_t take = 0;
 
 uint8_t * take_mem;
 
 uint8_t tick = 0;
+
+bool display_on;
 
 void debounce(struct button * b, void (*f)(void)) {
 	if (bit_is_clear(*(b->sfr), b->pin)) {
@@ -80,43 +82,63 @@ uint8_t lookup(char num) {
 	return lookup('E'); // 'E' for error by default
 }
 
-char int2char(uint8_t num) {
+char int_to_char(uint8_t num) {
 	return (char) (((uint8_t) '0') + num);
 }
 
-void displayChar(char num, struct display * display) {
+void display_char(char num, struct display * display) {
 	*(display->sfr) = nums[lookup(num)];
+
+	PORTA |= 1 << PINA7; // button output
+	PORTD |= 1 << PIND7; // button output
+
 	if (display->mux) {
 		if (num == ' ') PORTB &= ~(1 << display->pin);
 		else PORTB |= 1 << display->pin;
 	}
 }
 
-void displayNumber(uint8_t number, bool take) {
+void display_number(uint8_t number, bool take) {
 	if (take) {
-		displayChar(int2char(number % 10), &DSPD);
-		displayChar(int2char(number / 10), &DSPC);
+		display_char(int_to_char(number % 10), &DSPD);
+		display_char(int_to_char(number / 10), &DSPC);
 	} else {
 		if (tick % 2 == 0) {
-			displayChar(' ', &DSPA);
-			displayChar(int2char(number % 10), &DSPB);
+			display_char(' ', &DSPA);
+			display_char(int_to_char(number % 10), &DSPB);
 		} else {
-			displayChar(' ', &DSPB);
-			displayChar(int2char(number / 10), &DSPA);
+			display_char(' ', &DSPB);
+			display_char(int_to_char(number / 10), &DSPA);
 		}
 	}
 }
 
-void button0_press(void) {
-	take = 1;
-	take_mem[scene] = take;
+void scene_incr(void) {
+	take_mem[scene * sizeof(uint8_t)] = take;
 	scene++;
-	if (scene > 99) scene = 1;
+	if (scene > 99) scene = 0;
+	take = take_mem[scene * sizeof(uint8_t)];
 }
 
-void button1_press(void) {
+void scene_decr(void) {
+	take_mem[scene * sizeof(uint8_t)] = take;
+	scene--;
+	if (scene > 99 ) scene = 99;
+	take = take_mem[scene * sizeof(uint8_t)];
+}
+
+void take_incr(void) {
 	take++;
-	if (take > 99) take = 1;
+	if (take > 99) take = 0;
+}
+
+void take_decr(void) {
+	take--;
+	if (take > 99) take = 99;
+}
+
+void toggle_display(void) {
+	display_on = !display_on;
 }
 
 int main(void) {
@@ -135,8 +157,10 @@ int main(void) {
 	for (uint8_t i = 0; i < 100; i++)
 		take_mem[i * s] = 0;
 
-	// output mode
-	DDRA = 0xff;
+	DDRA = 0b01111111;
+	DDRA &= ~(1 << PINA7);
+
+	display_on = true;
 
 	DDRB = 0b00000011; // controller bits for mux displays
 	DDRB &= ~(1 << PINB2);
@@ -148,23 +172,39 @@ int main(void) {
 	PORTB |= 1 << PINB4;
 
 	DDRC = 0xff;
-	DDRD = 0xff;
 
+	DDRD = 0b01111111;
+	DDRD &= ~(1 << PIND7);
 
-	struct button scene_button = { .sfr = &PINB, .pin = 2 };
-	struct button take_button = { .sfr = &PINB, .pin = 3 };
-	struct button lever_button = { .sfr = &PINB, .pin = 4 };
+	struct button button_scene_incr = { .sfr = &PINA, .pin = 7 };
+	struct button button_scene_decr = { .sfr = &PINB, .pin = 4 };
+
+	struct button button_take_incr = { .sfr = &PINB, .pin = 3 };
+	struct button button_take_decr = { .sfr = &PINB, .pin = 2 };
+
+	struct button button_display_toggle = { .sfr = &PIND, .pin = 7 };
 
 	while (true) {
-		debounce(&scene_button, button0_press);
+		debounce(&button_display_toggle, toggle_display);
 
-		debounce(&take_button, button1_press);
-		debounce(&lever_button, button1_press);
+		if (display_on) {
+			debounce(&button_scene_incr, scene_incr);
+			debounce(&button_scene_decr, scene_decr);
 
-		displayNumber(take, true);
-		displayNumber(scene, false);
+			debounce(&button_take_incr, take_incr);
+			debounce(&button_take_decr, take_decr);
 
-		tick = ++tick % 256;
+			display_number(take, true);
+			display_number(scene, false);
+		} else {
+			display_char(' ', &DSPA);
+			display_char(' ', &DSPB);
+			display_char(' ', &DSPC);
+			display_char(' ', &DSPD);
+		}
+
+		tick++;
+		tick %= 256;
 	}
 
 	free(take_mem);
