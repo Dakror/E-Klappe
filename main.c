@@ -197,6 +197,7 @@ int main(void) {
 			display_number(take, true);
 			display_number(scene, false);
 		} else {
+			// change that it's pretty bad for battery!
 			display_char(' ', &DSPA);
 			display_char(' ', &DSPB);
 			display_char(' ', &DSPC);
