@@ -1,35 +1,35 @@
-/*
- * Author: Dakror
- */
+//
+// Author: Dakror | Maximilian Stark
+//
 
 #include <avr/io.h>
+#include <avr/sleep.h>
+#include <avr/interrupt.h>
+
+#include <util/delay.h>
+
 #include <math.h>
 #include <stdlib.h>
+
+//////////////////////////////////
+//////////////////////////////////
 
 #define confidence_threshhold 10
 
 #define true 1
 #define false 0
 
+inline char int_to_char(uint8_t num) {
+	return (char) (((uint8_t) '0') + num);
+}
+
 typedef uint8_t bool;
 
-struct display {
-	volatile uint8_t * sfr;
-	uint8_t pin;
-	bool mux;
-} DSPA, DSPB, DSPC, DSPD;
+//////////////////////////////////
+//////////////////////////////////
 
-struct button {
-	volatile uint8_t * sfr;
-	uint8_t pin;
-
-	bool pressed;
-	uint8_t pressed_confidence;
-	uint8_t released_confidence;
-};
-
-char nums[] = {
-// - - - - - - HDCGBEFA
+const char nums[] = {
+// - - HDCGBEFA
         ' ', 0b00000000, //
         'E', 0b01010111, //
         '0', 0b01101111, //
@@ -51,8 +51,39 @@ uint8_t * take_mem;
 
 uint8_t tick = 0;
 
-bool display_on;
+bool display_on = true;
 
+//////////////////////////////////
+//////////////////////////////////
+
+//
+// Represents a 7-seg-display
+//
+struct display {
+	uint8_t pin;
+	bool mux;
+
+	volatile uint8_t * sfr;
+} DSPA, DSPB, DSPC, DSPD;
+
+//////////////////////////////////
+//////////////////////////////////
+
+//
+// Represents a Button hardware
+//
+struct button {
+	uint8_t pin;
+	bool pressed;
+	uint8_t pressed_confidence;
+	uint8_t released_confidence;
+
+	volatile uint8_t * sfr;
+};
+
+//
+// Debounces Button hardware
+//
 void debounce(struct button * b, void (*f)(void)) {
 	if (bit_is_clear(*(b->sfr), b->pin)) {
 		b->pressed_confidence++;
@@ -75,6 +106,12 @@ void debounce(struct button * b, void (*f)(void)) {
 	}
 }
 
+//////////////////////////////////
+//////////////////////////////////
+
+//
+// looks up char in table
+//
 uint8_t lookup(char num) {
 	for (uint8_t i = 0; i < sizeof(nums); i += 2)
 		if (num == nums[i]) return i + 1;
@@ -82,10 +119,9 @@ uint8_t lookup(char num) {
 	return lookup('E'); // 'E' for error by default
 }
 
-char int_to_char(uint8_t num) {
-	return (char) (((uint8_t) '0') + num);
-}
-
+//
+// Displays given char on specified display
+//
 void display_char(char num, struct display * display) {
 	*(display->sfr) = nums[lookup(num)];
 
@@ -98,6 +134,9 @@ void display_char(char num, struct display * display) {
 	}
 }
 
+//
+// Displays given number across multiple displays
+//
 void display_number(uint8_t number, bool take) {
 	if (take) {
 		display_char(int_to_char(number % 10), &DSPD);
@@ -113,6 +152,9 @@ void display_number(uint8_t number, bool take) {
 	}
 }
 
+//////////////////////////////////
+//////////////////////////////////
+
 void scene_incr(void) {
 	take_mem[scene * sizeof(uint8_t)] = take;
 	scene++;
@@ -123,7 +165,7 @@ void scene_incr(void) {
 void scene_decr(void) {
 	take_mem[scene * sizeof(uint8_t)] = take;
 	scene--;
-	if (scene > 99 ) scene = 99;
+	if (scene > 99) scene = 99;
 	take = take_mem[scene * sizeof(uint8_t)];
 }
 
@@ -139,9 +181,47 @@ void take_decr(void) {
 
 void toggle_display(void) {
 	display_on = !display_on;
+
+	if(!display_on) {
+		PORTA = 0;
+		PORTB = 0;
+		PORTC = 0;
+		PORTD = 0;
+
+		PORTA |= 1 << PINA7; // button output
+		PORTD |= 1 << PIND7; // button output
+
+		PORTB |= 1 << PINB2;
+		PORTB |= 1 << PINB3;
+		PORTB |= 1 << PINB4;
+	}
 }
 
+//////////////////////////////////
+//////////////////////////////////
+
+/*
+
+
+ rewrite system of display pins
+
+ INT1 - 3 one of them is needed to function as a external interrupt for the sleep
+ mode.
+ Replace that pin with one of the ex-button pins.
+
+ make each display store an array of pins for themselves
+
+
+
+
+
+
+
+
+ */
+
 int main(void) {
+	// initialize displays
 	DSPA.sfr = &PORTD;
 	DSPA.pin = PINB1;
 	DSPA.mux = true;
@@ -151,16 +231,18 @@ int main(void) {
 	DSPC.sfr = &PORTA;
 	DSPD.sfr = &PORTC;
 
+	ACSR = 0x80;
+
+	// initialize take_mem
 	uint8_t s = sizeof(uint8_t);
 
 	take_mem = malloc(100 * s);
 	for (uint8_t i = 0; i < 100; i++)
 		take_mem[i * s] = 0;
 
+	// setup pins
 	DDRA = 0b01111111;
 	DDRA &= ~(1 << PINA7);
-
-	display_on = true;
 
 	DDRB = 0b00000011; // controller bits for mux displays
 	DDRB &= ~(1 << PINB2);
@@ -176,6 +258,7 @@ int main(void) {
 	DDRD = 0b01111111;
 	DDRD &= ~(1 << PIND7);
 
+	// buttons
 	struct button button_scene_incr = { .sfr = &PINA, .pin = 7 };
 	struct button button_scene_decr = { .sfr = &PINB, .pin = 4 };
 
@@ -183,6 +266,8 @@ int main(void) {
 	struct button button_take_decr = { .sfr = &PINB, .pin = 2 };
 
 	struct button button_display_toggle = { .sfr = &PIND, .pin = 7 };
+
+	// main loop
 
 	while (true) {
 		debounce(&button_display_toggle, toggle_display);
@@ -193,15 +278,12 @@ int main(void) {
 
 			debounce(&button_take_incr, take_incr);
 			debounce(&button_take_decr, take_decr);
+			PORTB |= 1 << PINB2;
+			PORTB |= 1 << PINB3;
+			PORTB |= 1 << PINB4;
 
 			display_number(take, true);
 			display_number(scene, false);
-		} else {
-			// change that it's pretty bad for battery!
-			display_char(' ', &DSPA);
-			display_char(' ', &DSPB);
-			display_char(' ', &DSPC);
-			display_char(' ', &DSPD);
 		}
 
 		tick++;
@@ -212,4 +294,3 @@ int main(void) {
 
 	return 0;
 }
-
